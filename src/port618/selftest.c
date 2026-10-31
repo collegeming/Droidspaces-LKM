@@ -4,13 +4,14 @@
 #include <linux/pid_namespace.h>
 #include <linux/user_namespace.h>
 #include <linux/rcupdate.h>
+#include <linux/delay.h>
 #include "port.h"
 
 int ds_port_selftest(void)
 {
 	struct pid_namespace *pid = NULL, *pid_shared = NULL, *invalid;
 	struct ipc_namespace *ipc = NULL, *ipc_shared = NULL;
-	int ret = -EINVAL;
+	int ret = -EINVAL, i;
 
 	pid = copy_pid_ns(CLONE_NEWPID, &init_user_ns, &init_pid_ns);
 	if (IS_ERR(pid)) {
@@ -60,7 +61,18 @@ out:
 	if (pid)
 		put_pid_ns(pid);
 	ds_ipc_flush();
-	rcu_barrier();
+	/*
+	 * put_pid_ns() schedules the final teardown on system_wq; rcu_barrier()
+	 * alone can return before that work has queued its RCU callback. Give
+	 * the workqueue a bounded window so a freshly loaded module does not
+	 * fail its own selftest with -EBUSY on a busy system.
+	 */
+	for (i = 0; i < 500; i++) {
+		rcu_barrier();
+		if (!atomic_read(&ds_pid_live) && !atomic_read(&ds_ipc_live))
+			break;
+		msleep(10);
+	}
 	if (atomic_read(&ds_pid_live) || atomic_read(&ds_ipc_live))
 		ret = -EBUSY;
 	if (ret)

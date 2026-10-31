@@ -23,6 +23,7 @@
 #include <linux/sched/task.h>
 #include <linux/sched/signal.h>
 #include <linux/idr.h>
+#include <linux/delay.h>
 #include <linux/nstree.h>
 #include <uapi/linux/wait.h>
 #include <linux/module.h>
@@ -492,7 +493,16 @@ void ds_pid_exit(void)
 	unsigned int i;
 
 	ds_memfd_exit();
-	/* Last namespace releases run in module-owned RCU callbacks. */
+	/*
+	 * Last namespace releases run in system_wq work that then queues a
+	 * module-owned RCU callback. Wait for the work to get there before
+	 * tearing the caches down, otherwise the callback can run after the
+	 * module text is gone.
+	 */
+	for (i = 0; i < 500 && atomic_read(&ds_pid_live); i++) {
+		rcu_barrier();
+		msleep(10);
+	}
 	rcu_barrier();
 	if (WARN_ON(atomic_read(&ds_pid_live)))
 		return;

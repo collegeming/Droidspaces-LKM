@@ -8,6 +8,7 @@
 #include <linux/msg.h>
 #include <linux/ipc_namespace.h>
 #include <linux/rcupdate.h>
+#include <linux/delay.h>
 #include <linux/nsproxy.h>
 #include <linux/slab.h>
 #include <linux/cred.h>
@@ -277,6 +278,18 @@ const struct proc_ns_operations ipcns_operations = {
 
 void ds_ipc_flush(void)
 {
+	unsigned int i;
+
+	/*
+	 * free_ipc_work may requeue itself while the last namespace is torn
+	 * down. A single flush_work() can return before the final put has
+	 * run; drain with a bounded wait so module unload cannot race it.
+	 */
+	for (i = 0; i < 500 && atomic_read(&ds_ipc_live); i++) {
+		flush_work(&free_ipc_work);
+		rcu_barrier();
+		msleep(10);
+	}
 	flush_work(&free_ipc_work);
 	WARN_ON(atomic_read(&ds_ipc_live));
 }
