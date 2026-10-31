@@ -96,6 +96,28 @@ fail:
 	return ret;
 }
 
+static void ds_ipc_task_flush(void)
+{
+	struct ds_ipc_task *state;
+	struct hlist_node *tmp;
+	unsigned long flags;
+	unsigned int bkt;
+
+	/*
+	 * Hooks and the syscall table are already restored by deactivate, so
+	 * no task can install a new state. Live tasks may still carry one from
+	 * before the unload; free them here instead of leaving module memory
+	 * behind and warning on a normal hot reload.
+	 */
+	spin_lock_irqsave(&task_states_lock, flags);
+	hash_for_each_safe(task_states, bkt, tmp, state, node) {
+		hash_del(&state->node);
+		atomic_dec(&ds_ipc_task_live);
+		kfree(state);
+	}
+	spin_unlock_irqrestore(&task_states_lock, flags);
+}
+
 void ds_ipc_backend_exit(void)
 {
 	ds_ipc_proc_exit();
@@ -105,5 +127,6 @@ void ds_ipc_backend_exit(void)
 	msg_exit_ns(&init_ipc_ns);
 	shm_exit_ns(&init_ipc_ns);
 	rcu_barrier();
+	ds_ipc_task_flush();
 	WARN_ON(!hash_empty(task_states));
 }
