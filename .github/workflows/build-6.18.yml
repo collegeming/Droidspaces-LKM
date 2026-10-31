@@ -22,6 +22,9 @@ jobs:
           python3 --version
           docker version --format '{{.Server.Version}}'
 
+      - name: Prepare output directory
+        run: mkdir -p out/gki/android17-6.18 && chmod 777 out/gki/android17-6.18
+
       - name: Build droidspaces_ns for android17-6.18
         run: python3 scripts/build-gki.py 6.18 -j2
 
