@@ -131,6 +131,9 @@ static struct ds_syscall_hook ipc_syscalls[] = {
 };
 static unsigned long *syscall_table;
 static bool hooks_installed;
+static bool exit_hook = true;
+module_param(exit_hook, bool, 0444);
+MODULE_PARM_DESC(exit_hook, "Replace do_exit (disable to test the native exit path)");
 
 static int write_syscall(struct ds_syscall_hook *hook, bool restore)
 {
@@ -269,6 +272,8 @@ static int install_stopped(void *unused)
 	}
 
 	for (i = 0; i < ARRAY_SIZE(hooks); i++) {
+		if (!exit_hook && !strcmp(hooks[i].name, "do_exit"))
+			continue;
 		ret = write_hook(&hooks[i], false);
 		if (ret)
 			goto rollback;
