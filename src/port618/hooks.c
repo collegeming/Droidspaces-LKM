@@ -15,6 +15,7 @@
 #include <linux/sched/task.h>
 #include <linux/bpf.h>
 #include <linux/perf_event.h>
+#include <linux/kstrtox.h>
 #include "fs/fuse/fuse_i.h"
 #include "core.h"
 #include "port.h"
@@ -129,6 +130,7 @@ static struct ds_syscall_hook ipc_syscalls[] = {
 	IPC_SYSCALL(reboot), IPC_SYSCALL(memfd_create),
 };
 static unsigned long *syscall_table;
+static bool hooks_installed;
 
 static int write_syscall(struct ds_syscall_hook *hook, bool restore)
 {
@@ -320,6 +322,8 @@ int ds_hooks_prepare(void)
 	unsigned int i;
 	int ret;
 
+	if (hooks_installed)
+		return 0;
 	if (init_pid_ns.ns.ops || init_pid_ns.ns.ns_id)
 		return -EOPNOTSUPP;
 	ret = prepare_bpf_hooks();
@@ -365,10 +369,119 @@ int ds_hooks_prepare(void)
 	return 0;
 }
 
+static int remove_stopped(void *unused)
+{
+	unsigned int i;
+	int ret = 0;
+
+	ns_tree_remove(&init_ipc_ns);
+	ns_tree_remove(&init_pid_ns);
+	/* Allow a freshly loaded module to register the init namespaces again. */
+	WRITE_ONCE(init_pid_ns.ns.ns_id, 0);
+	WRITE_ONCE(init_ipc_ns.ns.ns_id, 0);
+
+	for (i = 0; i < ARRAY_SIZE(bpf_hooks); i++)
+		if (write_pointer(bpf_hooks[i].slot, bpf_hooks[i].saved))
+			ret = -EIO;
+	WRITE_ONCE(ds_ipc_active, false);
+
+	for (i = 0; i < ARRAY_SIZE(ipc_syscalls); i++)
+		if (write_syscall(&ipc_syscalls[i], true))
+			ret = -EIO;
+
+	if (init_pid_ns.ns.ops == &pidns_operations)
+		WRITE_ONCE(init_pid_ns.ns.ops, NULL);
+
+	for (i = 0; i < ARRAY_SIZE(proc_hooks); i++)
+		if (write_hook(&proc_hooks[i], true))
+			ret = -EIO;
+
+	for (i = 0; i < ARRAY_SIZE(hooks); i++)
+		if (write_hook(&hooks[i], true))
+			ret = -EIO;
+
+	return ret;
+}
+
+int ds_hooks_remove(void)
+{
+	int ret;
+
+	if (!hooks_installed)
+		return 0;
+	ret = stop_machine(remove_stopped, NULL, NULL);
+	if (ret) {
+		pr_err("hook removal failed: %d\n", ret);
+		return ret;
+	}
+	hooks_installed = false;
+	/* Drop the reference taken in ds_hooks_install(). */
+	module_put(THIS_MODULE);
+	pr_info("hooks removed; module can now be unloaded\n");
+	return 0;
+}
+
+static bool deactivate;
+
+static int deactivate_set(const char *val, const struct kernel_param *kp)
+{
+	bool v;
+	int ret;
+
+	/* Keep the module alive while this handler runs and drops the pin. */
+	if (!try_module_get(THIS_MODULE))
+		return -ENODEV;
+	ret = kstrtobool(val, &v);
+	if (ret)
+		goto out;
+	if (!v) {
+		ret = 0;
+		goto out;
+	}
+	if (atomic_read(&ds_pid_live) || atomic_read(&ds_ipc_live)) {
+		pr_err("deactivate refused: live namespaces (pid=%d ipc=%d)\n",
+		       atomic_read(&ds_pid_live), atomic_read(&ds_ipc_live));
+		ret = -EBUSY;
+		goto out;
+	}
+	ret = ds_hooks_remove();
+	if (!ret)
+		*(bool *)kp->arg = true;
+out:
+	module_put(THIS_MODULE);
+	return ret;
+}
+
+static int deactivate_get(char *buffer, const struct kernel_param *kp)
+{
+	return scnprintf(buffer, PAGE_SIZE, "%d\n", *(bool *)kp->arg);
+}
+
+static const struct kernel_param_ops deactivate_ops = {
+	.set = deactivate_set,
+	.get = deactivate_get,
+};
+module_param_cb(deactivate, &deactivate_ops, &deactivate, 0600);
+MODULE_PARM_DESC(deactivate, "Remove all hooks and release the module pin (write 1)");
+
+static int hooks_active_get(char *buffer, const struct kernel_param *kp)
+{
+	return scnprintf(buffer, PAGE_SIZE, "%d\n", hooks_installed);
+}
+
+static const struct kernel_param_ops hooks_active_ops = {
+	.get = hooks_active_get,
+};
+module_param_cb(hooks_active, &hooks_active_ops, NULL, 0400);
+MODULE_PARM_DESC(hooks_active, "Whether the entry hooks are currently installed");
+
 int ds_hooks_install(void)
 {
-	int ret = ds_hooks_prepare();
+	int ret;
 
+	if (hooks_installed)
+		return 0;
+	ret = ds_hooks_prepare();
 	if (ret)
 		return ret;
 	/* Objects in procfs can retain operation pointers after all tasks exit. */
@@ -376,5 +489,7 @@ int ds_hooks_install(void)
 	ret = stop_machine(install_stopped, NULL, NULL);
 	if (ret)
 		module_put(THIS_MODULE);
+	else
+		hooks_installed = true;
 	return ret;
 }

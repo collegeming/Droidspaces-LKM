@@ -14,5 +14,6 @@ void ds_ipc_flush(void);
 int ds_port_selftest(void);
 int ds_hooks_install(void);
 int ds_hooks_prepare(void);
+int ds_hooks_remove(void);
 
 #endif
