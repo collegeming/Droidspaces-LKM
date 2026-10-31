@@ -527,7 +527,11 @@ static void exit_mm(void)
 	 */
 	smp_mb__after_spinlock();
 	local_irq_disable();
-	current->user_dumpable = (get_dumpable(mm) == SUID_DUMP_USER);
+	/*
+	 * yingtian runs 6.18.21, which has no task_struct::user_dumpable; the
+	 * field only exists in newer GKI builds and occupies __kabi_reserved1
+	 * there. Do not write it: on this kernel that slot is still padding.
+	 */
 	current->mm = NULL;
 	membarrier_update_current_mm(NULL);
 	enter_lazy_tlb(mm, current);

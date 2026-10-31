@@ -1,0 +1,43 @@
+name: build-android17-6.18
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - yingtian-6.18.21
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show build environment
+        run: |
+          python3 --version
+          docker version --format '{{.Server.Version}}'
+
+      - name: Build droidspaces_ns for android17-6.18
+        run: python3 scripts/build-gki.py 6.18 -j2
+
+      - name: Inspect module
+        run: |
+          set -eux
+          ls -l out/gki/android17-6.18
+          cat out/gki/android17-6.18/build.json
+          sha256sum out/gki/android17-6.18/droidspaces_ns.ko
+          grep -ao 'vermagic=[^ ]*' out/gki/android17-6.18/droidspaces_ns.ko | head -1
+
+      - name: Upload module
+        uses: actions/upload-artifact@v4
+        with:
+          name: droidspaces_ns-android17-6.18
+          if-no-files-found: error
+          path: |
+            out/gki/android17-6.18/droidspaces_ns.ko
+            out/gki/android17-6.18/build.json
